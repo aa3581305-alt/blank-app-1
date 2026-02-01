@@ -63,53 +63,64 @@ avg_rate = st.sidebar.slider("想定年率 (%)", 0.1, 15.0, float(round(sp500_re
 vol_rate = st.sidebar.slider("ボラティリティ/リスク (%)", 0.0, 40.0, float(round(sp500_ref["vol"], 1)))
 years = st.sidebar.slider("運用年数 (年)", 1, 50, 20)
 
-# --- 4. モンテカルロ法によるリスクシミュレーション ---
+# --- 4. モンテカルロ法によるリスクシミュレーション (5%境界版) ---
 def simulate_investment_risk(monthly, rate, vol, duration):
-    n_sims = 200 # 試行回数
-    mu = rate / 100 / 12
-    sigma = vol / 100 / np.sqrt(12)
-    nisa_limit = 18000000
-    
-    all_runs = []
-    for _ in range(n_sims):
-        val = 0
-        principal = 0
-        path = []
-        for m in range(1, duration * 12 + 1):
-            if principal + monthly <= nisa_limit:
-                principal += monthly
-                val += monthly
-            # ランダムなリターンを生成
-            val *= (1 + np.random.normal(mu, sigma))
-            if m % 12 == 0:
-                path.append(val)
-        all_runs.append(path)
-    
-    res_np = np.array(all_runs)
-    years_list = list(range(1, duration + 1))
-    
-    return pd.DataFrame({
-        "年": years_list,
-        "平均値": np.mean(res_np, axis=0),
-        "上位15%": np.percentile(res_np, 85, axis=0),
-        "下位15%": np.percentile(res_np, 15, axis=0),
-        "元本": [min(monthly * 12 * y, nisa_limit) for y in years_list]
-    })
+    n_sims = 500 # 精度向上のため試行回数を増やしました
+    mu = rate / 100 / 12
+    sigma = vol / 100 / np.sqrt(12)
+    nisa_limit = 18000000
+    
+    all_runs = []
+    for _ in range(n_sims):
+        val = 0
+        principal = 0
+        path = []
+        for m in range(1, duration * 12 + 1):
+            if principal + monthly <= nisa_limit:
+                principal += monthly
+                val += monthly
+            # 正規分布に基づきランダムなリターンを生成
+            val *= (1 + np.random.normal(mu, sigma))
+            if m % 12 == 0:
+                path.append(val)
+        all_runs.append(path)
+    
+    res_np = np.array(all_runs)
+    years_list = list(range(1, duration + 1))
+    
+    return pd.DataFrame({
+        "年": years_list,
+        "平均値": np.mean(res_np, axis=0),
+        "上位5%": np.percentile(res_np, 95, axis=0), # 上位5%の境界点
+        "下位5%": np.percentile(res_np, 5, axis=0),  # 下位5%の境界点
+        "元本": [min(monthly * 12 * y, nisa_limit) for y in years_list]
+    })
 
 df_res = simulate_investment_risk(monthly_inv, avg_rate, vol_rate, years)
 
-# メインチャート
-st.subheader(f"📈 {years}年後の予測範囲: {int(df_res.iloc[-1]['平均値']):,} 円 (平均)")
+# --- 5. メインチャートの表示 ---
+st.subheader(f"📈 {years}年後の予測範囲 (90%信頼区間)")
+st.markdown(f"平均的な結果は **{int(df_res.iloc[-1]['平均値']):,} 円** です。 "
+            f"90%の確率で **{int(df_res.iloc[-1]['下位5%']):,} 円 〜 {int(df_res.iloc[-1]['上位5%']):,} 円** の範囲に収まると予測されます。")
+
 fig = go.Figure()
-# エリア表示 (上位15%〜下位15%)
-fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["上位15%"], name="上位15% (好調)", line=dict(width=0), showlegend=False))
-fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["下位15%"], name="運用リスク (中心的な予測範囲)", fill='tonexty', fillcolor='rgba(0,104,201,0.2)', line=dict(width=0)))
-# 中央の平均線
-fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["平均値"], name="平均的な推移", line=dict(color='#0068c9', width=4)))
-# 元本線
+
+# エリア表示 (上位5% 〜 下位5% の範囲を塗る)
+fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["上位5%"], name="上位5% (絶好調)", line=dict(width=0), showlegend=False))
+fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["下位5%"], name="予測範囲 (確率90%)", fill='tonexty', fillcolor='rgba(0,104,201,0.2)', line=dict(width=0)))
+
+# 中央の平均線 (太線)
+fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["平均値"], name="平均値", line=dict(color='#0068c9', width=4)))
+
+# 元本線 (点線)
 fig.add_trace(go.Scatter(x=df_res["年"], y=df_res["元本"], name="投資元本", line=dict(color='gray', dash='dash')))
 
-fig.update_layout(xaxis_title="経過年数", yaxis_title="資産額 (円)", hovermode="x unified")
+fig.update_layout(
+    xaxis_title="経過年数", 
+    yaxis_title="資産額 (円)", 
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
 st.plotly_chart(fig, use_container_width=True)
 
 # 市場実績データ表示
@@ -137,4 +148,4 @@ if st.button("このシミュレーション結果を保存する"):
             "annual_rate": avg_rate, "years": years, "final_wealth": int(df_res.iloc[-1]["平均値"])
         }).execute()
         st.success("保存完了！")
-    except: st.error("保存失敗")このコードを上位と下位１０％の表示にして
+    except: st.error("保存失敗")
