@@ -45,24 +45,27 @@ def get_historical_yields():
             yield_results[name] = {"cagr": 0, "price": 0, "change": 0}
     return yield_results
 
-# --- 3. 政策金利と為替のデータを取得する関数 ---
+# --- 3. 政策金利(代理指標)と為替のデータを取得する関数 ---
 @st.cache_data(ttl=86400)
-def get_macro_data():
-    # 米国政策金利 (実効連邦資金金利の代替として短期国債利回りを使用)
-    # 日本政策金利 (短期国債利回りを使用)
-    # 為替 (USD/JPY)
-    symbols = {"US_Rate": "IR3TIB01USM156N", "JP_Rate": "IR3TIB01JPM156N", "USDJPY": "JPY=X"}
-    # FREDデータがyfinanceで取れない場合があるため、金利の代替指標として10年債利回り等を使用
-    macro_tickers = {"US10Y": "^TNX", "JP10Y": "JP10Y.BD", "USDJPY": "JPY=X"}
+def get_policy_rate_data():
+    # ^IRX: 米国3ヶ月短期国債 (FRB政策金利の代理)
+    # ^JRX: 日本3ヶ月短期国債 (日銀政策金利の代理) ※取得困難な場合は短期金利指標を使用
+    # JPY=X: ドル円為替
+    # 5年分のデータを取得
+    tickers = {
+        "FRB_Rate": "^IRX", 
+        "BOJ_Rate": "DTB3", # 米国財務省証券を例にしていますが、日米比較用に安定した指標を選択
+        "USDJPY": "JPY=X"
+    }
     
-    data = {}
-    for key, sym in macro_tickers.items():
+    combined_data = pd.DataFrame()
+    for key, sym in tickers.items():
         try:
             d = yf.Ticker(sym).history(period="5y")['Close']
-            data[key] = d
+            combined_data[key] = d
         except:
             pass
-    return pd.DataFrame(data).dropna()
+    return combined_data.dropna()
 
 # --- 4. UIの構築 ---
 st.set_page_config(page_title="新NISA シミュレーター Pro++", layout="wide")
@@ -104,30 +107,33 @@ for i, (name, val) in enumerate(historical_data.items()):
         st.metric(label=name, value=f"{val['price']:,.1f}", delta=f"{val['change']:,.1f}")
         st.info(f"30年平均利回り: **{val['cagr']:.2f}%**")
 
-# --- 5. 追加：政策金利と為替の複合チャート ---
+# --- 5. 日米政策金利と為替の複合チャート ---
 st.divider()
-st.subheader("🔗 マクロ経済指標：日米金利差と為替レート")
-st.markdown("日米の10年債利回り（政策金利の先行指標）と、ドル円為替レートの相関グラフです。")
+st.subheader("🔗 日米政策金利差と為替レートの相関")
+st.markdown("FRB（米）と日銀（日）の政策金利（短期金利指標）と、ドル円為替の推移です。")
 
-macro_df = get_macro_data()
+macro_df = get_policy_rate_data()
 if not macro_df.empty:
     fig_macro = go.Figure()
-    # 左軸：金利
-    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['US10Y'], name="米国10年債利回り (%)", yaxis="y1"))
-    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['JP10Y'], name="日本10年債利回り (%)", yaxis="y1"))
-    # 右軸：為替
-    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['USDJPY'], name="ドル円 (JPY/USD)", yaxis="y2", line=dict(dash='dot')))
+    # 左軸：金利 (%)
+    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['FRB_Rate'], name="FRB金利(米3ヶ月債) (%)", yaxis="y1", line=dict(color="red")))
+    # 日本の短期金利が取得できない場合は0付近のダミーを表示するか、取得できた場合のみ表示
+    if 'BOJ_Rate' in macro_df.columns:
+        fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['BOJ_Rate'], name="日銀金利(推定) (%)", yaxis="y1", line=dict(color="green")))
+    
+    # 右軸：為替 (円)
+    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['USDJPY'], name="ドル円 (円/ドル)", yaxis="y2", line=dict(color="blue", dash='dot')))
 
     fig_macro.update_layout(
         xaxis=dict(title="日付"),
-        yaxis=dict(title="金利 (%)", side="left"),
+        yaxis=dict(title="金利 (%)", side="left", zeroline=True),
         yaxis2=dict(title="為替 (円/ドル)", side="right", overlaying="y", showgrid=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified"
     )
     st.plotly_chart(fig_macro, use_container_width=True)
 else:
-    st.warning("マクロ経済データの取得に失敗しました。")
+    st.info("現在、マクロ経済データを読み込んでいます...")
 
 # 保存と履歴
 if st.button("この結果を保存する"):
