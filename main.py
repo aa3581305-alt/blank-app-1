@@ -64,7 +64,7 @@ years = st.sidebar.slider("運用年数 (年)", 1, 50, 20)
 
 # --- 4. モンテカルロ法によるリスクシミュレーション ---
 def simulate_investment_risk(monthly, rate, vol, duration):
-    n_sims = 500 # 試行回数
+    n_sims = 5000 # 試行回数
     mu = rate / 100 / 12
     sigma = vol / 100 / np.sqrt(12)
     nisa_limit = 18000000
