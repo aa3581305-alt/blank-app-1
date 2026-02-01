@@ -45,27 +45,21 @@ def get_historical_yields():
             yield_results[name] = {"cagr": 0, "price": 0, "change": 0}
     return yield_results
 
-# --- 3. 政策金利(代理指標)と為替のデータを取得する関数 ---
-@st.cache_data(ttl=86400)
-def get_policy_rate_data():
-    # ^IRX: 米国3ヶ月短期国債 (FRB政策金利の代理)
-    # ^JRX: 日本3ヶ月短期国債 (日銀政策金利の代理) ※取得困難な場合は短期金利指標を使用
-    # JPY=X: ドル円為替
-    # 5年分のデータを取得
-    tickers = {
-        "FRB_Rate": "^IRX", 
-        "BOJ_Rate": "DTB3", # 米国財務省証券を例にしていますが、日米比較用に安定した指標を選択
-        "USDJPY": "JPY=X"
-    }
-    
+# --- 3. マクロ経済データ(金利と為替)を取得する関数 ---
+@st.cache_data(ttl=3600)
+def get_macro_data():
+    # ^TNX: 米国10年債利回り, JPY=X: ドル円為替
+    tickers = {"US_Rate": "^TNX", "USDJPY": "JPY=X"}
     combined_data = pd.DataFrame()
     for key, sym in tickers.items():
         try:
-            d = yf.Ticker(sym).history(period="5y")['Close']
-            combined_data[key] = d
+            d = yf.Ticker(sym).history(period="3y")['Close']
+            if not d.empty:
+                combined_data[key] = d
         except:
-            pass
-    return combined_data.dropna()
+            continue
+    # 欠損値を前の日の値で埋めて、整合性を保つ
+    return combined_data.ffill()
 
 # --- 4. UIの構築 ---
 st.set_page_config(page_title="新NISA シミュレーター Pro++", layout="wide")
@@ -80,7 +74,7 @@ sp500_avg = historical_data.get("S&P 500 (USD)", {}).get("cagr", 5.0)
 annual_rate = st.sidebar.slider("想定年率 (%)", 0.1, 15.0, float(round(sp500_avg, 1)))
 years = st.sidebar.slider("運用年数 (年)", 1, 50, 20)
 
-# 計算とグラフ
+# 計算ロジック
 def calculate_investment(monthly, rate, duration):
     data = []
     total_principal, current_value = 0, 0
@@ -107,43 +101,48 @@ for i, (name, val) in enumerate(historical_data.items()):
         st.metric(label=name, value=f"{val['price']:,.1f}", delta=f"{val['change']:,.1f}")
         st.info(f"30年平均利回り: **{val['cagr']:.2f}%**")
 
-# --- 5. 日米政策金利と為替の複合チャート ---
+# --- 5. 日米金利差と為替の複合チャート ---
 st.divider()
-st.subheader("🔗 日米政策金利差と為替レートの相関")
-st.markdown("FRB（米）と日銀（日）の政策金利（短期金利指標）と、ドル円為替の推移です。")
+st.subheader("🔗 マクロ経済指標：米国金利と為替レートの相関")
+st.markdown("FRBの政策方針を反映する米国10年債利回りと、ドル円為替の推移です。")
 
-macro_df = get_policy_rate_data()
-if not macro_df.empty:
+macro_df = get_macro_data()
+if not macro_df.empty and "US_Rate" in macro_df.columns:
     fig_macro = go.Figure()
     # 左軸：金利 (%)
-    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['FRB_Rate'], name="FRB金利(米3ヶ月債) (%)", yaxis="y1", line=dict(color="red")))
-    # 日本の短期金利が取得できない場合は0付近のダミーを表示するか、取得できた場合のみ表示
-    if 'BOJ_Rate' in macro_df.columns:
-        fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['BOJ_Rate'], name="日銀金利(推定) (%)", yaxis="y1", line=dict(color="green")))
-    
+    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['US_Rate'], name="米国10年債利回り (%)", yaxis="y1", line=dict(color="red")))
     # 右軸：為替 (円)
-    fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['USDJPY'], name="ドル円 (円/ドル)", yaxis="y2", line=dict(color="blue", dash='dot')))
+    if "USDJPY" in macro_df.columns:
+        fig_macro.add_trace(go.Scatter(x=macro_df.index, y=macro_df['USDJPY'], name="ドル円 (円/ドル)", yaxis="y2", line=dict(color="blue", dash='dot')))
 
     fig_macro.update_layout(
         xaxis=dict(title="日付"),
-        yaxis=dict(title="金利 (%)", side="left", zeroline=True),
-        yaxis2=dict(title="為替 (円/ドル)", side="right", overlaying="y", showgrid=False),
+        yaxis=dict(title="金利 (%)", side="left", range=[0, 6]),
+        yaxis2=dict(title="為替 (円/ドル)", side="right", overlaying="y", showgrid=False, range=[100, 165]),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified"
     )
     st.plotly_chart(fig_macro, use_container_width=True)
 else:
-    st.info("現在、マクロ経済データを読み込んでいます...")
+    st.warning("現在、マクロ経済データを取得できません。ページを更新するか、しばらくお待ちください。")
 
 # 保存と履歴
-if st.button("この結果を保存する"):
+st.divider()
+if st.button("このシミュレーション結果を保存する"):
     try:
-        supabase.table("nisa_logs").insert({"user_name": "ゲストユーザー", "monthly_investment": monthly_investment, "annual_rate": annual_rate, "years": years, "final_wealth": int(df_result.iloc[-1]["合計資産"])}).execute()
-        st.success("保存完了！")
+        supabase.table("nisa_logs").insert({
+            "user_name": "ゲストユーザー", 
+            "monthly_investment": monthly_investment, 
+            "annual_rate": annual_rate, 
+            "years": years, 
+            "final_wealth": int(df_result.iloc[-1]["合計資産"])
+        }).execute()
+        st.success("データベースに保存しました！")
     except: st.error("保存失敗")
 
 st.subheader("💾 最近の保存履歴")
 try:
     res = supabase.table("nisa_logs").select("*").order("id", desc=True).limit(5).execute()
-    if res.data: st.dataframe(pd.DataFrame(res.data)[["monthly_investment", "annual_rate", "final_wealth", "created_at"]])
+    if res.data: 
+        st.dataframe(pd.DataFrame(res.data)[["monthly_investment", "annual_rate", "final_wealth", "created_at"]])
 except: st.warning("履歴表示不可")
